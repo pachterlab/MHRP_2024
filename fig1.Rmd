@@ -1,0 +1,11 @@
+---
+title: "Figure 1"
+output: html_document
+date: "2024-12-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Code to reproduce Figure 1, at least the part that can be done in R.
