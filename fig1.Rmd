@@ -9,3 +9,46 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 Code to reproduce Figure 1, at least the part that can be done in R.
+```{r}
+library(SpatialFeatureExperiment)
+library(SFEData)
+library(Voyager)
+library(tidyverse)
+library(scuttle)
+library(sf)
+```
+
+
+# Panel A
+1. It's just a screenshot from Google Maps. I'll attribute it to Google Maps.
+
+2. Use Xenium data
+```{r}
+fp <- XeniumOutput("v2")
+sfe <- readXenium(fp, add_molecules = TRUE)
+```
+
+```{r}
+plotImage(sfe, image_id = "morphology_focus", channel = 3:1, show_axes = TRUE)
+```
+
+```{r}
+bbox <- c(xmin=700, xmax=850, ymin=-800, ymax=-650)
+```
+
+```{r}
+gene_vars <- rowVars(counts(sfe))
+gene_plot <- rownames(sfe)[order(gene_vars, decreasing = TRUE)[1:2]]
+(p1 <- plotGeometry(sfe, colGeometryName = c("cellSeg", "nucSeg"), 
+                    rowGeometryName = "txSpots",
+                    gene = gene_plot, image_id = "morphology_focus",
+                    bbox = bbox, channel = 3:1, normalize_channels = TRUE,
+                    dark = TRUE, tx_alpha = 0.8, tx_size = 0.8))
+```
+
+That's it. The other panels can't be made in R anyway.
+
+```{r}
+ggsave(p1, filename = "fig1.jpg", width = 4, height = 3.2)
+```
+

@@ -1,0 +1,574 @@
+---
+title: "Figure 2"
+output: html_document
+date: "2024-12-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. Adapt from slide showing affine transformations, but include an example of canonical orientation
+2. Example of such an alignment, can use Xenium to Visium for the lung cancer dataset I’m currently working on, spoiler to the next paper
+3. Move the myofiber and Visium spot plot from the old Voyager paper
+4. Spatial binning schematic
+5. Contiguity splitting example
+6. Extract raster values with vector; real life usecase in QC to find Visium spots with less tissue in them
+
+
+```{r}
+library(SpatialFeatureExperiment)
+library(SFEData)
+library(Voyager)
+library(tidyverse)
+library(scuttle)
+library(sf)
+library(scater)
+library(DelayedMatrixStats)
+library(terra)
+library(EBImage)
+library(BiocParallel)
+theme_set(theme_bw())
+```
+
+# Affine
+```{r}
+if (!dir.exists(file.path("outs", "spatial"))) {
+    download.file("https://cf.10xgenomics.com/samples/spatial-exp/2.0.0/Visium_Mouse_Olfactory_Bulb/Visium_Mouse_Olfactory_Bulb_spatial.tar.gz",
+                  destfile = file.path("outs", "spatial.tar.gz"))
+    untar(file.path("outs", "spatial.tar.gz"), exdir = "outs")
+}
+```
+
+```{r}
+sfe_ob <- read10xVisiumSFE(".")
+```
+
+```{r}
+(p1 <- plotGeometry(sfe_ob, colGeometryName = "spotPoly", image_id = "lowres", fill = FALSE))
+```
+
+```{r}
+ggsave("fig2/p1a.jpg", p1, width = 2, height = 3)
+```
+
+```{r}
+sfe_ob2 <- SpatialFeatureExperiment::rotate(sfe_ob, 90, sample_id = "all")
+```
+
+```{r}
+(p1b <- plotGeometry(sfe_ob2, colGeometryName = "spotPoly", image_id = "lowres", fill = FALSE))
+```
+
+```{r}
+ggsave("fig2/p1b.jpg", p1b, width = 3, height = 2)
+```
+
+```{r}
+bbox <- c(xmin=3400, xmax=4400, ymin=3000, ymax=4000)
+bbox_sf <- st_bbox(bbox) |> st_as_sfc()
+```
+
+```{r}
+(p2 <- plotGeometry(sfe_ob2, colGeometryName = "spotPoly", image_id = "lowres", fill = FALSE) +
+     geom_sf(data = bbox_sf, color = "red", fill = NA, linewidth = 1))
+```
+
+```{r}
+ggsave("fig2/p2a.jpg", p2, width = 3, height = 2)
+```
+
+```{r}
+(p2b <- plotGeometry(sfe_ob2, colGeometryName = "spotPoly", image_id = "hires", fill = FALSE,
+                     bbox = bbox))
+```
+
+```{r}
+ggsave("fig2/p2b.jpg", p2b, width = 2, height = 2)
+```
+
+
+# Affine alignment
+
+```{r}
+sfe1 <- read10xVisiumSFE(samples = "TSU-21", dirs = "~/hd/data/Haga/SpatialOmics/Visium/TSU-21", 
+                         data = "filtered", zero.policy = TRUE, unit = "micron")
+```
+
+```{r}
+sfe2 <- readXenium("~/hd/data/Haga/SpatialOmics/Xenium/TSU-21/")
+```
+
+```{r}
+plotImage(sfe1, image_id = "lowres")
+```
+
+```{r}
+plotImage(sfe2, image_id = "morphology_focus")
+```
+
+```{r}
+img1 <- toExtImage(getImg(sfe1, image_id = "hires"))
+img2 <- toExtImage(getImg(sfe2, image_id = "morphology_focus"), resolution = 6)
+```
+
+```{r}
+dim(img1)
+```
+
+```{r}
+dim(img2)
+```
+
+```{r}
+bar <- clahe(normalize(img2), nx = 4, ny = 6)
+```
+
+```{r}
+display(bar, method = "raster")
+```
+
+```{r}
+img1 <- normalize(img1)
+colorMode(img1) <- Grayscale
+img2 <- bar
+```
+
+```{r}
+mask1 <- img1[,,2] < otsu(img1[,,2])
+mask2 <- img2 > otsu(img2)
+```
+
+```{r}
+mask1 <- fillHull(mask1)
+```
+
+```{r}
+display(mask1)
+```
+
+```{r}
+mask2 <- closing(mask2, makeBrush(7))
+mask2 <- fillHull(mask2)
+```
+
+```{r}
+display(mask2)
+```
+
+```{r}
+# It's like every project has its own version of this
+get_tissue_boundary <- function(mask, n_pieces = 1, simplify = TRUE, ...) {
+    mask <- toSpatRasterImage(mask, save_geotiff = FALSE)
+    names(mask) <- "value"
+    polys <- as.polygons(mask)
+    polys <- polys[polys$value==1,]
+    polys <- st_as_sf(polys) |> st_geometry()
+    polys <- st_cast(polys, "POLYGON")
+    area <- st_area(polys)
+    if (n_pieces < length(area)) 
+        polys <- polys[order(area, decreasing = TRUE)[seq_len(n_pieces)]]
+    if (simplify) {
+        #polys <- rmapshaper::ms_simplify(polys, ...)
+        polys <- st_simplify(polys, ...)
+    }
+    polys
+}
+```
+
+```{r}
+tb1 <- get_tissue_boundary(mask1, dTolerance=50)
+tb2 <- get_tissue_boundary(mask2, dTolerance=50)
+```
+
+```{r}
+ggplot() + geom_sf(data = tb1, color = "red", fill = NA) + 
+    geom_sf(data = tb2, color = "blue", fill = NA)
+```
+
+
+```{r}
+.npts <- function(x) nrow(st_coordinates(x))
+```
+
+```{r}
+.npts(tb2)
+```
+
+```{r}
+library(LOMAR)
+```
+
+```{r}
+verts1 <- st_coordinates(tb1)[,c("X", "Y")]
+verts2 <- st_coordinates(tb2)[,c("X", "Y")]
+```
+
+```{r}
+trans <- cpd(verts2, verts1, scale = FALSE)
+```
+
+```{r}
+v_trans2 <- as.data.frame(trans$Y)
+v_trans2$type <- "transformed"
+v_ref2 <- as.data.frame(verts2)
+v_ref2$type <- "reference"
+v <- rbind(v_ref2, v_trans2)
+names(v) <- c("X", "Y", "type")
+```
+
+```{r}
+ggplot(v, aes(X, Y, color = type)) +
+    geom_point(size = 0.5) +
+    geom_path() +
+    coord_equal()
+```
+
+Not bad. Using sf's st_simplify worked better than using rmapshaper, probably because it preserves more points at the curvier places.
+```{r}
+trans[c("R", "t", "s")]
+```
+
+```{r}
+get_transform <- function(moving, fixed, R, t) {
+    mu_y <- colMeans(moving)
+    mu_x <- colMeans(fixed)
+    t_use <- -R %*% mu_y + t + mu_x
+    list(M = R, v = as.vector(t_use))
+}
+```
+
+```{r}
+ts <- get_transform(verts1, verts2, trans$R, trans$t)
+```
+
+```{r}
+foo <- t(ts$M %*% t(verts1) + ts$v)
+```
+
+```{r}
+as.data.frame(foo) |> 
+    ggplot(aes(V1, V2)) + geom_point() + coord_equal() +
+    geom_path(data = v, aes(X, Y, color = type))
+```
+
+```{r}
+foo <- df2sf(foo, spatialCoordsNames = c("V1", "V2"))
+```
+
+```{r}
+sfe1_t <- SpatialFeatureExperiment::affine(sfe1, M = ts$M, v = ts$v)
+```
+
+```{r}
+library(alabaster.sfe)
+```
+
+```{r}
+saveObject(sfe1_t, "haga21_visium")
+```
+
+```{r}
+(p7a <- plotImage(sfe1_t, image_id = "lowres", 
+                  bbox = as.vector(st_bbox(foo)) |> 
+                      setNames(c("xmin", "ymin", "xmax", "ymax"))))
+```
+
+```{r}
+ggsave("fig2/p7a.jpg", p7a, width = 1.5, height = 3)
+```
+
+OK, so it works. Then what? How should the figure look? Overlaying the Visium spots on Xenium cells doesn't really make a good figure. I can just show the transformed image
+
+```{r}
+plotGeometry(sfe1, colGeometryName = "spotPoly", fill = FALSE,
+             image_id = "lowres")
+```
+
+```{r}
+(p7c <- plotGeometry(sfe1_t, colGeometryName = "spotPoly", fill = FALSE,
+             image_id = "hires") +
+    geom_sf(data = tb2, fill = NA, color = "blue"))
+```
+
+```{r}
+writeImage(bar, "fig2/p7b.jpg", quality = 95)
+```
+
+```{r}
+ggsave("fig2/p7c.jpg", p7c, width = 2, height = 4)
+```
+
+```{r}
+dim(sfe1)
+```
+
+```{r}
+cg <- spotPoly(sfe1_t)
+```
+
+```{r}
+sfe3 <- aggregateTxTech("~/hd/data/Haga/SpatialOmics/Xenium/TSU-21/",
+                        by = spotPoly(sfe1_t), tech = "Xenium",
+                        BPPARAM = SerialParam(progressbar = TRUE))
+```
+
+```{r}
+sfe1_t <- sfe1_t[rowData(sfe1_t)$symbol %in% rownames(sfe3),]
+```
+
+```{r}
+sfe3 <- addPerCellQC(sfe3, subsets = list(visium = rownames(sfe3) %in% rowData(sfe1_t)$symbol))
+sfe1_t <- addPerCellQC(sfe1_t)
+```
+
+```{r}
+plotSpatialFeature(sfe1_t, "sum", colGeometryName = "spotPoly")
+```
+
+```{r}
+plotSpatialFeature(sfe3, "subsets_visium_sum", colGeometryName = "bins")
+```
+
+Weird that there's such difference between Visium and Xenium. I wonder if it happens to other datasets as well. For the intersecting genes, even the general patterns are different and I can see a lot more structure on Xenium.
+
+```{r}
+saveObject(sfe3, "haga21_xenium_pseudo_visium")
+```
+
+
+# Myofiber
+
+```{r}
+sfe1 <- McKellarMuscleData("full")
+```
+
+```{r}
+sfe_tissue <- sfe1[,colData(sfe1)$in_tissue]
+sfe_tissue <- sfe_tissue[rowSums(counts(sfe_tissue)) > 0,]
+```
+
+```{r}
+(p3a <- plotSpatialFeature(sfe_tissue, features = "nCounts", 
+                           colGeometryName = "spotPoly",
+                           annotGeometryName = "myofiber_simplified", 
+                           aes_use = "color", linewidth = 0.5, fill = NA,
+                           annot_aes = list(fill = "area")))
+```
+
+```{r}
+ggsave("fig2/p3a.png", p3a, width = 3.5, height = 4)
+```
+
+```{r}
+colData(sfe_tissue)$mean_myofiber_area <- 
+  annotSummary(sfe_tissue, "spotPoly", "myofiber_simplified", 
+               annotColNames = "area")[,1] # it always returns a data frame
+```
+
+```{r}
+(p3b <- plotColData(sfe_tissue, x = "nCounts", y = "nGenes", colour_by = "mean_myofiber_area"))
+```
+
+```{r}
+ggsave("fig2/p3b.png", p3b, width = 5, height = 3.5)
+```
+
+# Spatial binning schematic
+
+```{r}
+fp <- XeniumOutput("v2")
+fp <- "xenium2"
+sfe <- readXenium(fp, add_molecules = TRUE)
+```
+
+```{r}
+rv <- rowVars(counts(sfe))
+rs <- rowSums(counts(sfe))
+gene_use <- rownames(sfe)[which.max(rs)]
+```
+
+```{r}
+grid <- st_make_grid(centroids(sfe), cellsize = 55, square = FALSE)
+```
+
+```{r, fig.width=3.5, fig.height=3}
+(p4a <- plotSpatialFeature(sfe, gene_use, colGeometryName = "centroids", size = 0.3, exprs_values = "counts") +
+    geom_sf(data = grid, color = "gray50", fill = NA))
+```
+
+```{r}
+ggsave("fig2/p4a.png", p4a, width = 3.5, height = 3)
+```
+
+```{r}
+sfe_bc <- aggregate(sfe, by = grid, colGeometryName = "centroids")
+```
+
+```{r}
+(p4b <- plotSpatialFeature(sfe_bc, gene_use, exprs_values = "counts"))
+```
+
+```{r}
+ggsave("fig2/p4b.png", p4b, width = 3.5, height = 3)
+```
+
+```{r}
+bbox2 <- c(xmin=700, xmax=850, ymin=-800, ymax=-650)
+sfe_sub <- crop(sfe, bbox2)
+```
+
+```{r}
+gene_use2 <- rownames(sfe_sub)[which.max(rowSums(counts(sfe_sub)))]
+```
+
+```{r}
+grid2 <- st_make_grid(txSpots(sfe_sub), cellsize = 20, square = FALSE)
+```
+
+```{r}
+(p4c <- plotGeometry(sfe_sub, colGeometryName = "cellSeg", rowGeometryName = "txSpots", gene = gene_use2,
+             fill = FALSE) +
+     geom_sf(data = grid2, fill = NA, color = "cornflowerblue"))
+```
+
+```{r}
+ggsave("fig2/p4c.png", p4c, width = 3, height = 3)
+```
+
+```{r}
+txSpots(sfe_sub) <- st_cast(txSpots(sfe_sub), "MULTIPOINT") |> st_zm()
+```
+
+```{r}
+sfe_agg_cell <- aggregate(sfe_sub, cellSeg(sfe_sub), rowGeometryName = "txSpots")
+```
+
+```{r}
+(p4d <- plotSpatialFeature(sfe_agg_cell, features = gene_use2, exprs_values = "counts",
+                   rowGeometryName = "txSpots", rowGeometryFeatures = gene_use2))
+```
+
+```{r}
+ggsave("fig2/p4d.png", p4d, width = 3.5, height = 3)
+```
+
+```{r}
+sfe_agg_grid <- aggregate(sfe_sub, rowGeometryName = "txSpots", cellsize = 20, square = FALSE)
+```
+
+```{r}
+(p4e <- plotSpatialFeature(sfe_agg_grid, features = gene_use2, exprs_values = "counts",
+                   rowGeometryName = "txSpots", rowGeometryFeatures = gene_use2))
+```
+
+```{r}
+ggsave("fig2/p4e.png", p4e, width = 3.5, height = 3)
+```
+
+# Contiguity splitting
+```{r}
+pieces <- readRDS(system.file("extdata/pieces.rds", package = "SpatialFeatureExperiment"))
+pieces <- st_sf(geometry = pieces, sample_id = "sample01")
+annotGeometry(sfe, "pieces") <- pieces
+```
+
+```{r}
+(p5a <- plotGeometry(sfe, colGeometryName = "cellSeg", annotGeometryName = "pieces"))
+```
+
+```{r}
+ggsave("fig2/p5a.png", p5a, width = 4, height = 3)
+```
+
+```{r}
+sfes_pieces <- splitByCol(sfe, pieces)
+```
+
+```{r}
+# Combine them back as different samples
+sfes_pieces[[2]] <- changeSampleIDs(sfes_pieces[[2]], c(sample01 = "sample02"))
+sfe2 <- do.call(cbind, sfes_pieces)
+(p5b <- plotGeometry(sfe2, colGeometryName = "cellSeg"))
+```
+
+```{r}
+ggsave("fig2/p5b.png", p5b, width = 6, height = 3)
+```
+
+# Raster to vector
+```{r}
+imgData(sfe_ob2)
+```
+
+```{r}
+Img(sfe_ob2, image_id = "hires") <- toSpatRasterImage(getImg(sfe_ob2, image_id = "hires"), 
+                                                      save_geotiff = FALSE)
+```
+
+```{r}
+df <- extract(getImg(sfe_ob2, image_id = "hires"), vect(spotPoly(sfe_ob2)))
+```
+
+```{r}
+df <- df |> 
+    mutate(mean = rowMeans(select(df, starts_with("lyr")))) |> 
+    group_by(ID) |> 
+    summarize(across(everything(), mean))
+```
+
+```{r}
+sfe_ob2$mean_value <- df$mean
+```
+
+```{r}
+plotSpatialFeature(sfe_ob2, features = "mean_value")
+```
+
+```{r}
+sfe_ob2 <- addPerCellQC(sfe_ob2)
+```
+
+```{r}
+library(mclust)
+```
+
+```{r}
+clusts <- Mclust(colData(sfe_ob2)[,c("mean_value", "sum")])
+```
+
+```{r}
+summary(clusts)
+```
+
+```{r}
+clusts$G
+```
+
+```{r}
+sfe_ob2$clusts <- as.character(unname(clusts$classification))
+```
+
+```{r}
+data("ditto_colors")
+```
+
+```{r}
+(p6a <- plotColData(sfe_ob2, x = "mean_value", y = "sum", color_by = "clusts") +
+    geom_density2d() +
+    scale_color_manual(values = ditto_colors, name = "cluster"))
+```
+
+```{r}
+ggsave("fig2/p6a.png", p6a, width = 5, height = 3.5)
+```
+
+```{r}
+(p6b <- plotSpatialFeature(sfe_ob2, features = "clusts", image_id = "lowres") +
+     scale_fill_manual(values = ditto_colors, name = "cluster"))
+```
+
+```{r}
+ggsave("fig2/p6b.png", p6b, width = 5, height = 3)
+```
+
