@@ -52,3 +52,7 @@ That's it. The other panels can't be made in R anyway.
 ggsave(p1, filename = "fig1.jpg", width = 4, height = 3.2)
 ```
 
+```{r}
+sessionInfo()
+```
+

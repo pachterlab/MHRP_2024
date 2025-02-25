@@ -71,7 +71,7 @@ bbox_sf <- st_bbox(bbox) |> st_as_sfc()
 
 ```{r}
 (p2 <- plotGeometry(sfe_ob2, colGeometryName = "spotPoly", image_id = "lowres", fill = FALSE) +
-     geom_sf(data = bbox_sf, color = "red", fill = NA, linewidth = 1))
+     geom_sf(data = bbox_sf, color = "blue", fill = NA, linewidth = 1))
 ```
 
 ```{r}
@@ -93,6 +93,10 @@ ggsave("fig2/p2b.jpg", p2b, width = 2, height = 2)
 ```{r}
 sfe1 <- read10xVisiumSFE(samples = "TSU-21", dirs = "~/hd/data/Haga/SpatialOmics/Visium/TSU-21", 
                          data = "filtered", zero.policy = TRUE, unit = "micron")
+```
+
+```{r}
+sfe1 <- mirror(sfe1)
 ```
 
 ```{r}
@@ -179,6 +183,16 @@ get_tissue_boundary <- function(mask, n_pieces = 1, simplify = TRUE, ...) {
 ```{r}
 tb1 <- get_tissue_boundary(mask1, dTolerance=50)
 tb2 <- get_tissue_boundary(mask2, dTolerance=50)
+```
+
+```{r}
+tb2_full <- get_tissue_boundary(mask2, simplify = FALSE)
+```
+
+```{r}
+saveRDS(tb1, "haga_visium_tb.rds")
+saveRDS(tb2, "haga_xenium_tb.rds")
+saveRDS(tb2_full, "haga_xenium_tb_full.rds")
 ```
 
 ```{r}
@@ -288,7 +302,7 @@ plotGeometry(sfe1, colGeometryName = "spotPoly", fill = FALSE,
 ```{r}
 (p7c <- plotGeometry(sfe1_t, colGeometryName = "spotPoly", fill = FALSE,
              image_id = "hires") +
-    geom_sf(data = tb2, fill = NA, color = "blue"))
+    geom_sf(data = tb2, fill = NA, color = "blue", linewidth = 1))
 ```
 
 ```{r}
@@ -367,7 +381,8 @@ colData(sfe_tissue)$mean_myofiber_area <-
 ```
 
 ```{r}
-(p3b <- plotColData(sfe_tissue, x = "nCounts", y = "nGenes", colour_by = "mean_myofiber_area"))
+(p3b <- plotColData(sfe_tissue, x = "nCounts", y = "nGenes", colour_by = "mean_myofiber_area") +
+     scale_color_viridis_c(name = "Mean\nmyofiber\narea"))
 ```
 
 ```{r}
@@ -474,7 +489,8 @@ annotGeometry(sfe, "pieces") <- pieces
 ```
 
 ```{r}
-(p5a <- plotGeometry(sfe, colGeometryName = "cellSeg", annotGeometryName = "pieces"))
+(p5a <- plotGeometry(sfe, colGeometryName = "cellSeg") +
+     geom_sf(data = pieces, fill = NA, color = "blue", linewidth = 1))
 ```
 
 ```{r}
@@ -556,7 +572,8 @@ data("ditto_colors")
 ```{r}
 (p6a <- plotColData(sfe_ob2, x = "mean_value", y = "sum", color_by = "clusts") +
     geom_density2d() +
-    scale_color_manual(values = ditto_colors, name = "cluster"))
+    scale_color_manual(values = ditto_colors, name = "cluster") +
+     labs(x = "Mean pixel value", y = "Total counts"))
 ```
 
 ```{r}
@@ -570,5 +587,9 @@ ggsave("fig2/p6a.png", p6a, width = 5, height = 3.5)
 
 ```{r}
 ggsave("fig2/p6b.png", p6b, width = 5, height = 3)
+```
+
+```{r}
+sessionInfo()
 ```
 
