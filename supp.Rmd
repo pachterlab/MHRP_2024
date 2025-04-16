@@ -1,0 +1,526 @@
+---
+title: "Supplementary figure"
+output: html_document
+date: "2025-01-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(SpatialFeatureExperiment)
+library(SFEData)
+library(Voyager)
+library(tidyverse)
+library(scuttle)
+library(sf)
+library(scater)
+library(DelayedMatrixStats)
+library(BiocParallel)
+library(bluster)
+library(concordexR)
+library(pheatmap)
+theme_set(theme_bw())
+```
+
+# Clustering with concordex and local Moran's I
+```{r}
+fp <- "xenium2"
+sfe <- readXenium(fp)
+```
+
+```{r}
+sfe <- addPerCellQC(sfe)
+```
+
+```{r}
+summary(sfe$sum)
+```
+
+```{r}
+summary(sfe$cell_area)
+```
+
+```{r}
+plotColData(sfe, x = "cell_area", y = "sum") +
+    geom_density2d()
+```
+
+```{r}
+sfe <- sfe[,sfe$sum > 3]
+sfe <- sfe[rowData(sfe)$Type == "Gene Expression",]
+```
+
+```{r}
+sfe <- logNormCounts(sfe, size.factors = sfe$cell_area)
+sfe <- runPCA(sfe, ncomponents = 30)
+```
+
+```{r}
+ElbowPlot(sfe, ndims = 30)
+```
+
+```{r}
+plotDimLoadings(sfe, dims = 1:4, swap_rownames = "Symbol")
+```
+
+```{r}
+colData(sfe)$cluster <- clusterRows(t(logcounts(sfe)),
+                                    BLUSPARAM = SNNGraphParam(
+                                        cluster.fun = "leiden",
+                                        cluster.args = list(
+                                            resolution_parameter = 0.5,
+                                            objective_function = "modularity")))
+```
+
+```{r}
+spatialReducedDim(sfe, "PCA", ncomponents = 4, 
+                  colGeometryName = "cellSeg", divergent = TRUE, 
+                  diverge_center = 0)
+```
+
+```{r}
+(p13 <- plotSpatialFeature(sfe, "cluster", colGeometryName = "cellSeg") +
+     labs(fill = "Leiden"))
+```
+
+```{r}
+res <- calculateConcordex(sfe, labels = sfe$cluster, 
+                          n_neighbors = 30,
+                          BLUSPARAM = KmeansParam(4))
+```
+
+```{r}
+pheatmap(res)
+```
+
+```{r}
+sfe$concordex <- attr(res, "shrs")
+```
+
+```{r}
+(p14 <- plotSpatialFeature(sfe, "concordex", colGeometryName = "cellSeg"))
+```
+
+Not sure if concordex clusters are any good here. Apparently it doesn't work great for rings made of single layers of cells. Making the spatial neighborhood graph is an art and knn isn't always the best way.
+
+```{r}
+min(rowSums(counts(sfe)))
+```
+
+```{r}
+colGraph(sfe, "knn5") <- findSpatialNeighbors(sfe, MARGIN = 2, method = "knearneigh", k = 5)
+```
+
+```{r}
+sfe <- runUnivariate(sfe, "localmoran")
+```
+
+```{r}
+Iis <- lapply(localResults(sfe, name = "localmoran")[seq_len(nrow(sfe))], \(x) x$Ii)
+Iis <- bind_cols(Iis)
+```
+
+```{r}
+colData(sfe)$cluster_Ii <- clusterRows(Iis,
+                                       BLUSPARAM = SNNGraphParam(
+                                           cluster.fun = "leiden",
+                                           cluster.args = list(
+                                               resolution_parameter = 0.5,
+                                               objective_function = "modularity")))
+```
+
+```{r}
+colData(sfe)$cluster_Ii <- clusterRows(Iis, BLUSPARAM = KmeansParam(4))
+```
+
+```{r}
+(p15 <- plotSpatialFeature(sfe, "cluster_Ii", colGeometryName = "cellSeg") +
+     labs(fill = "localmoran"))
+```
+
+The hard part: write a paragraph on biological interpretations. I think I'll include non-spatial clusters, concordex, and this in the supplement. Up to the co-authors and reviewers to suggest whether this should go to Fig 2 in place of the spatial splitting.
+
+```{r, fig.width=12, fig.height=4}
+(supp_fig1 <- p13|p14|p15)
+```
+
+```{r}
+ggsave("supp_fig1.png", supp_fig1, width = 12, height = 4)
+```
+
+```{r}
+plotLocalResult(sfe, "localmoran", feature = c("EPCAM", "CFTR", "TM4SF4", "PECAM1"), 
+                colGeometryName = "cellSeg", divergent = TRUE, diverge_center = 0,
+                swap_rownames = "Symbol")
+```
+
+```{r}
+plotLocalResult(sfe, "localmoran", feature = "IL7R", 
+                colGeometryName = "cellSeg", divergent = TRUE, diverge_center = 0,
+                swap_rownames = "Symbol")
+```
+
+# Moran's I of principal components
+```{r}
+sfe <- runMultivariate(sfe, "multispati", colGraphName = "knn5", nfposi = 15,
+                       nfnega = 15)
+```
+
+```{r}
+ElbowPlot(sfe, nfnega = 15, reduction = "multispati")
+```
+
+```{r}
+plotDimLoadings(sfe, dims = 1:4, reduction = "multispati", swap_rownames = "Symbol")
+```
+
+```{r}
+spatialReducedDim(sfe, "multispati", components = 1:4, 
+                  colGeometryName = "cellSeg", 
+                  divergent = TRUE, diverge_center = 0)
+```
+
+The negative one is irrelevant here
+
+```{r}
+# non-spatial
+sfe <- reducedDimMoransI(sfe, dimred = "PCA", components = 1:15,
+                         BPPARAM = MulticoreParam(2))
+# spatial
+sfe <- reducedDimMoransI(sfe, dimred = "multispati", components = 1:30,
+                         BPPARAM = MulticoreParam(2))
+```
+
+```{r}
+df_moran <- tibble(PCA = reducedDimFeatureData(sfe, "PCA")$moran_sample01[1:15],
+                   MULTISPATI_pos = 
+                       reducedDimFeatureData(sfe, "multispati")$moran_sample01[1:15],
+                   MULTISPATI_neg = 
+                       reducedDimFeatureData(sfe,"multispati")$moran_sample01[16:30] |> 
+                       rev(),
+                   index = 1:15)
+```
+
+```{r}
+data("ditto_colors")
+```
+
+```{r}
+mb <- moranBounds(colGraph(sfe, "knn5"))
+```
+
+```{r}
+df_moran <- df_moran |> 
+    pivot_longer(cols = -index, values_to = "value", names_to = "name") |> 
+    mutate(name = case_when(name == "MULTISPATI_pos" ~ "MULTISPATI+",
+                            name == "MULTISPATI_neg" ~ "MULTISPATI-",
+                            TRUE ~ name))
+```
+
+```{r}
+(p16 <- df_moran |> 
+    ggplot(aes(index, value, color = name)) +
+    geom_line() +
+    scale_color_manual(values = ditto_colors) +
+    geom_hline(yintercept = 0, color = "gray") +
+    geom_hline(yintercept = mb, linetype = 2, color = "gray") +
+    scale_y_continuous(breaks = scales::breaks_pretty()) +
+    scale_x_continuous(breaks = scales::breaks_width(5)) +
+    labs(y = "Moran's I", color = "Type", x = "Component"))
+```
+
+This stuff is already in the supplement of the Voyager paper but with a different dataset, so I don't think I'm going to include this figure in this paper. I'll just include the schematic showing feature data and cite the Voyager paper.
+
+```{r}
+ggsave(filename = "sup_fig1c.png", p16, width = 5, height = 4)
+```
+
+```{r}
+sfe <- reducedDimUnivariate(sfe, "localmoran", dimred = "multispati", components = 1:10)
+```
+
+```{r}
+Iis <- map(localResults(sfe, name = "localmoran")[paste0("PC", 1:10)], "Ii")
+Iis <- bind_cols(Iis)
+```
+
+```{r}
+colData(sfe)$multispati_Ii <- clusterRows(Iis,
+                                          BLUSPARAM = SNNGraphParam(
+                                              cluster.fun = "leiden",
+                                              cluster.args = list(
+                                                  resolution_parameter = 0.5,
+                                                  objective_function = "modularity")))
+```
+
+```{r}
+(p16 <- plotSpatialFeature(sfe, "multispati_Ii", colGeometryName = "cellSeg"))
+```
+
+```{r}
+library(alabaster.sfe)
+```
+
+```{r}
+saveObject(sfe, "xenium_Ii")
+```
+
+# Geometric operations
+Show these:
+Unitary: buffer (circle and square), simplify, inscribed circle, minimum rotated rectangle, convex hull
+Predicates: intersects, disjoint, covers/covered_by, touches
+Binary: intersection, difference, sym_difference
+
+What about things like st_area? They're very useful. I think I can write a section in supplementary methods about them and other cool things in the sf ecosystem. The cool part is bringing attention of sf to the bioinformatics community.
+
+Use biological examples
+```{r}
+library(patchwork)
+```
+
+## Unitary
+
+```{r}
+bb <- st_bbox(c(xmin=0, ymin=0, xmax=10, ymax=10))
+```
+
+```{r}
+hex_pts <- st_make_grid(bb, n = c(2, 2), square = FALSE, what = "centers")
+plot(hex_pts)
+```
+
+```{r}
+hex_circ <- st_buffer(hex_pts, 1)
+plot(hex_circ)
+```
+
+```{r}
+sq_pts <- st_make_grid(st_bbox(c(xmin=-2.5,xmax=12.5,ymin=-1, ymax=14)), n = c(4, 4), what = "centers")
+plot(sq_pts)
+```
+
+```{r}
+sq_grid <- st_buffer(sq_pts, 15/8, nQuadSegs = 1, endCapStyle = "SQUARE")
+plot(sq_grid)
+```
+
+```{r}
+df_hex <- st_sf(type = "Visium style", geometry = c(hex_circ, hex_pts))
+df_sq <- st_sf(type = "Visium HD style", geometry = c(sq_grid, sq_pts))
+df <- bind_rows(df_hex, df_sq)
+```
+
+```{r}
+(p1 <- ggplot(df) + geom_sf() + facet_wrap(~ type) +
+    ggtitle("st_buffer()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+Then st_simplify()
+
+```{r}
+tb2_full <- readRDS("haga_xenium_tb_full.rds")
+```
+
+```{r}
+df_tb <- st_sf(type = c("full", "simplified"), c(tb2_full, st_simplify(tb2_full, dTolerance = 100)))
+```
+
+```{r}
+(p2 <- ggplot(df_tb) + geom_sf(fill = NA, linewidth = 0.5) +
+    facet_wrap(~ type) + 
+    ggtitle("st_simplify()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+row1 <- p1 + p2
+```
+
+Inscribed circle
+```{r}
+set.seed(129)
+i <- sample(colnames(sfe), 1)
+```
+
+```{r}
+cell <- cellSeg(sfe)[i,]
+nucleus <- nucSeg(sfe)[i,]
+```
+
+```{r}
+ggplot(cell) + geom_sf()
+```
+
+```{r}
+ic <- st_inscribed_circle(cell$geometry, dTolerance = 0)
+```
+
+```{r}
+df_ic <- st_sf(type = c("cell", "circle"), geometry = c(cell$geometry, ic[1]))
+```
+
+```{r}
+(p3 <- ggplot(df_ic, aes(color = type)) + geom_sf(fill = NA, linewidth = 0.5) +
+    scale_color_manual(values = ditto_colors) + theme_void() + 
+    ggtitle("st_inscribed_circle()") +
+    theme(legend.position = "none", plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+qh <- st_convex_hull(cell$geometry)
+df_qh <- st_sf(type = c("cell", "qhull"), geometry = c(cell$geometry, qh))
+```
+
+```{r}
+(p4 <- ggplot(df_qh, aes(color = type)) + geom_sf(fill = NA, linewidth = 0.5) +
+    scale_color_manual(values = ditto_colors) + theme_void() + 
+    ggtitle("st_convex_hull()") +
+    theme(legend.position = "none", plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+df_mr <- st_sf(type = c("cell", "rect"), geometry = c(cell$geometry, st_minimum_rotated_rectangle(cell$geometry)))
+```
+
+```{r}
+(p5 <- ggplot(df_mr, aes(color = type)) + geom_sf(fill = NA, linewidth = 0.5) +
+    scale_color_manual(values = ditto_colors) + theme_void() + 
+    ggtitle("st_minimum_rotated_rectangle()") +
+    theme(legend.position = "none", plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+cs <- cellSeg(sfe) |> st_union()
+```
+
+```{r}
+concave <- st_concave_hull(cs, ratio = 0.02, allow_holes = TRUE)
+```
+
+```{r}
+plot(concave)
+```
+
+```{r}
+(p6 <- ggplot() + geom_sf(data = concave, linewidth = 0) + 
+    geom_sf(data = cellSeg(sfe), fill = ditto_colors[1], linewidth = 0) +
+    ggtitle("st_concave_hull()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+## Binary
+
+These are examples relevant to spatial -omics. I think I can also use the myofiber Visium example.
+```{r}
+library(scico)
+```
+
+```{r}
+sfe_muscle <- McKellarMuscleData("full")
+sfe_muscle <- sfe_muscle[,sfe_muscle$in_tissue]
+```
+
+```{r}
+inds <- st_intersects(spotPoly(sfe_muscle), annotGeometry(sfe_muscle, "myofiber_simplified"))
+inds2 <- st_covers(spotPoly(sfe_muscle), annotGeometry(sfe_muscle, "myofiber_simplified"))
+```
+
+```{r}
+cc <- which(lengths(inds) > 0 & lengths(inds2) > 0)
+```
+
+```{r}
+set.seed(81)
+i <- sample(cc, 1)
+```
+
+```{r}
+spot <- st_geometry(spotPoly(sfe_muscle))[i]
+myos <- st_geometry(annotGeometry(sfe_muscle, "myofiber_simplified"))[inds[[i]]]
+```
+
+```{r}
+(p7 <- ggplot() + geom_sf(data = myos) + 
+    geom_sf(data = spot, fill = NA, color = "blue", linewidth = 0.5) +
+    ggtitle("st_intersects()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+(p8 <- ggplot() + geom_sf(data = st_geometry(annotGeometry(sfe_muscle, "myofiber_simplified"))[inds2[[i]]]) + 
+    geom_sf(data = spot, fill = NA, color = "blue", linewidth = 0.5) +
+    ggtitle("st_covers()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+(p9 <- ggplot() + 
+    geom_sf(data = spot) +
+    geom_sf(data = st_geometry(annotGeometry(sfe_muscle, "myofiber_simplified"))[inds2[[i]]], 
+                   fill = NA, color = "blue", linewidth = 0.5) + 
+    ggtitle("st_covered_by()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+row3 <- p7 + p8 + p9
+```
+
+```{r}
+inter <- st_intersection(spot, myos)
+diff <- st_difference(myos, spot)
+```
+
+```{r}
+pal <- scico(5, palette = "romaO")
+```
+
+```{r}
+(p10 <- ggplot() + geom_sf(data = inter, fill = pal[3], linewidth = 0) +
+    geom_sf(data = myos, fill = NA, color = pal[2], linewidth = 0.5) + 
+    geom_sf(data = spot, fill = NA, color = pal[4], linewidth = 0.6) +
+    ggtitle("st_intersection()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+(p11 <- ggplot() + geom_sf(data = st_difference(spot, myos[1]), fill = pal[3], linewidth = 0) +
+    geom_sf(data = myos[1], fill = NA, color = pal[2], linewidth = 0.5) + 
+    geom_sf(data = spot, fill = NA, color = pal[4], linewidth = 0.6) +
+    ggtitle("st_diffrence()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+(p12 <- ggplot() + geom_sf(data = st_sym_difference(spot, myos[1]), fill = pal[3], linewidth = 0) +
+    geom_sf(data = myos[1], fill = NA, color = pal[2], linewidth = 0.5) + 
+    geom_sf(data = spot, fill = NA, color = pal[4], linewidth = 0.6) +
+    ggtitle("st_sym_difference()") + theme_void() +
+    theme(plot.title = element_text(family = "Liberation Mono", hjust = 0.5)))
+```
+
+```{r}
+row4 <- p10 + p11 + p12
+```
+
+```{r}
+row1 <- p2 + p6 + plot_layout(widths = c(0.8, 1))
+row2 <- p3+p4+p5 + plot_layout(widths = c(1,1,1.4))
+```
+
+```{r, fig.width=10, fig.height=16}
+(sup_fig2 <- p1/row1/row2/row3/row4 +
+    plot_layout(heights = c(0.7, 1, rep(0.7,3))))
+```
+
+```{r}
+ggsave("sup_fig2.png", sup_fig2, width = 10, height = 16)
+```
+
+```{r}
+sessionInfo()
+```
+
